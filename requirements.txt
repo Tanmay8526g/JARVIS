@@ -5,3 +5,5 @@ requests==2.32.5
 beautifulsoup4==4.14.2
 Pillow==12.0.0
 primp==2.0.1
+pytest
+google-genai==3.2.0
