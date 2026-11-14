@@ -1,5 +1,6 @@
 """Web search and page-reading tools."""
 from __future__ import annotations
+import json
 from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
@@ -11,7 +12,7 @@ def web_search(query: str, max_results: int = 5) -> str:
     try:
         limit = max(1, min(int(max_results), 10))
         rows = [{"title": r.get("title", ""), "snippet": r.get("body", ""), "url": r.get("href", "")} for r in DDGS(timeout=TIMEOUT).text(str(query), max_results=limit)]
-        return short(rows) if rows else "No search results were found."
+        return json.dumps(rows, ensure_ascii=False) if rows else "No search results were found."
     except Exception as error:
         return f"Web search failed: {error}"
 

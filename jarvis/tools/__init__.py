@@ -32,7 +32,10 @@ def run_tool(name: str, arguments: dict[str, Any]) -> str:
     if not definition:
         return f"Unknown tool requested: {name}"
     try:
-        result = short(definition.function(**arguments))
+        result = definition.function(**arguments)
+        # Keep source links complete for the final screen-only links list.
+        if name not in {"web_search", "get_news"}:
+            result = short(result)
         LOGGER.info("tool=%s arguments=%s success=true duration=%.3f", name, short(arguments), time.perf_counter() - started)
         if DEBUG:
             print(f"[DEBUG] tool={name} arguments={arguments}")

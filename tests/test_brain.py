@@ -87,6 +87,22 @@ def test_search_retries_then_uses_wikipedia():
     assert "Narendra Modi" in result
     assert [call.args[0] for call in run.call_args_list] == ["web_search", "web_search", "wikipedia_summary"]
 
+
+def test_news_links_are_only_at_end_and_preserved():
+    """News prose has source names while complete URLs stay in Links."""
+    long_link = "https://news.google.com/rss/articles/" + "a" * 240
+    result = '[{"headline":"India update","source":"Example Outlet","link":"' + long_link + '"}]'
+    call = {"function": {"name": "get_news", "arguments": {"topic": "India", "max_items": 5}}}
+    with patch("jarvis.brain._call", side_effect=[
+        {"message": {"tool_calls": [call], "content": ""}},
+        {"message": {"tool_calls": [], "content": "A model rewrite with " + long_link}},
+    ]), patch("jarvis.brain.run_tool", return_value=result):
+        reply = answer("latest news about India", history())
+    sentence_part, links_part = reply.split("\n\nLinks:\n", 1)
+    assert long_link not in sentence_part
+    assert "Source: Example Outlet" in sentence_part
+    assert links_part == "1. " + long_link
+
 def test_private_mode_never_calls_gemini_or_web_tools():
     """Private mode uses local model tools only and removes web tools."""
     seen = []

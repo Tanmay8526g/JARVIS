@@ -1,4 +1,5 @@
 """Public RSS news tool."""
+import json
 from urllib.parse import quote_plus
 import feedparser
 import requests
@@ -15,6 +16,9 @@ def get_news(topic: str = "", max_items: int = 5) -> str:
             response.raise_for_status()
             feed = feedparser.parse(response.content)
             for entry in feed.entries[:limit]:
-                rows.append({"headline": entry.get("title", ""), "source": feed.feed.get("title", "RSS"), "published": entry.get("published", entry.get("updated", "")), "link": entry.get("link", "")})
-        return short(rows[:limit]) if rows else "No news items were found."
+                source = entry.get("source", {})
+                if isinstance(source, dict):
+                    source = source.get("title", "")
+                rows.append({"headline": entry.get("title", ""), "source": source or feed.feed.get("title", "RSS"), "published": entry.get("published", entry.get("updated", "")), "link": entry.get("link", "")})
+        return json.dumps(rows[:limit], ensure_ascii=False) if rows else "No news items were found."
     except Exception as error: return f"News lookup failed: {error}"

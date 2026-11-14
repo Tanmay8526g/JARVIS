@@ -23,6 +23,11 @@ MAX_TOOL_ROUNDS = 4
 TIMEOUT = 10
 MAX_TOOL_CHARS = 3000
 DEBUG = True
+VOICE_ENABLED = True
+VOICE_RATE = 180
+VOICE_VOLUME = 1.0
+VOICE_ID = ""
+VOICE_MAX_CHARS = 400
 USER_AGENT = "Jarvis/1.0 (personal assistant)"
 ALLOWED_APPS = {"notepad": "notepad.exe", "calculator": "calc.exe", "browser": "https://www.google.com"}
 ROOT = Path(__file__).resolve().parent.parent
@@ -80,7 +85,7 @@ def load_config() -> None:
     global MODEL, MAX_MESSAGES, MAX_TOOL_ROUNDS, TIMEOUT, MAX_TOOL_CHARS, DEBUG, USER_AGENT, ALLOWED_APPS
     try:
         data = json.loads(CONFIG_FILE.read_text(encoding="utf-8")) if CONFIG_FILE.exists() else {}
-        for name in ("MODEL", "LLM_PROVIDER", "LLM_FALLBACK_PROVIDER", "GEMINI_MODEL", "ROUTING_MODE", "ROUTING_GEMINI_KEYWORDS", "ROUTING_LOCAL_KEYWORDS", "ROUTING_LOCAL_MAX_CHARS", "MAX_MESSAGES", "MAX_TOOL_ROUNDS", "TIMEOUT", "MAX_TOOL_CHARS", "DEBUG", "USER_AGENT", "ALLOWED_APPS"):
+        for name in ("MODEL", "LLM_PROVIDER", "LLM_FALLBACK_PROVIDER", "GEMINI_MODEL", "ROUTING_MODE", "ROUTING_GEMINI_KEYWORDS", "ROUTING_LOCAL_KEYWORDS", "ROUTING_LOCAL_MAX_CHARS", "MAX_MESSAGES", "MAX_TOOL_ROUNDS", "TIMEOUT", "MAX_TOOL_CHARS", "DEBUG", "VOICE_ENABLED", "VOICE_RATE", "VOICE_VOLUME", "VOICE_ID", "VOICE_MAX_CHARS", "USER_AGENT", "ALLOWED_APPS"):
             if name in data:
                 globals()[name] = _valid_allowed_apps(data[name]) if name == "ALLOWED_APPS" else data[name]
     except (OSError, ValueError):

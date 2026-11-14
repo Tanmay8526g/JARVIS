@@ -49,3 +49,10 @@ reasoning requests to Gemini. Local-only mode never selects Gemini.
 Terminal commands are `mode`, `mode smart`, `mode gemini_first`, `mode local_only`,
 `private on`, and `private off`. Private mode forces Ollama, offers no web tools, and
 marks private history so it is excluded from any later Gemini request.
+
+## Voice output
+
+Jarvis uses offline Windows speech through `pyttsx3==2.99`. Voice commands are
+`voice on`, `voice off`, `voices`, `voice 2`, `faster`, and `slower`. Voice settings
+can be overridden in `config.json`: `VOICE_ENABLED`, `VOICE_RATE`, `VOICE_VOLUME`,
+`VOICE_ID`, and `VOICE_MAX_CHARS`. Speech failures leave text mode working.

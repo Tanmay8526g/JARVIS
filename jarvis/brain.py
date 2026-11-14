@@ -171,6 +171,8 @@ def _tool_result(name: str, arguments: dict[str, Any], user_text: str, cache: di
 
 def _template(name: str, result: str, question: str = "") -> str:
     """Build a concise Python-owned answer from a tool result."""
+    if name in {"get_news", "web_search"}:
+        return _format_linked_results(name, result)
     if name == "get_current_datetime":
         parts = result.split(", ", 2)
         if "time" in question.lower() and len(parts) == 3:
@@ -208,6 +210,42 @@ def _template(name: str, result: str, question: str = "") -> str:
         return result
     labels = {"get_news": "Here are the latest news results", "web_search": "Here are the current web-search results", "wikipedia_summary": "Here is the Wikipedia summary", "read_webpage": "Here is the webpage text"}
     return f"{labels.get(name, 'Tool result')}: {result}"
+
+
+def _format_linked_results(name: str, result: str) -> str:
+    """Format headlines or search results without inline URLs."""
+    try:
+        rows = json.loads(result)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return result
+    if not isinstance(rows, list):
+        return result
+    lines: list[str] = []
+    links: list[str] = []
+    for index, row in enumerate(rows[:5], 1):
+        if not isinstance(row, dict):
+            continue
+        title = str(row.get("headline", row.get("title", "")))
+        title = re.sub(r"https?://\S+", "", title).replace("\ufffd", "").strip(" .-\t\r\n")
+        source = str(row.get("source", ""))
+        if not source or source.lower() in {"google news", "rss"}:
+            parts = [part.strip() for part in title.rsplit(" - ", 1)]
+            source = parts[-1] if len(parts) == 2 else (source or "Web search")
+        source = re.sub(r"https?://\S+", "", source).replace("\ufffd", "").strip(" .-\t\r\n") or "Unknown source"
+        title = re.sub(rf"\s*[-–—�]\s*{re.escape(source)}\s*[�]?\s*$", "", title).strip(" .-\t\r\n")
+        if source == "Web search":
+            source = urlparse(str(row.get("url", ""))).netloc or source
+        if title:
+            lines.append(f"{index}. {title} — Source: {source}.")
+        link = str(row.get("link", row.get("url", ""))).strip()
+        if link:
+            links.append(link)
+    if not lines:
+        return result
+    heading = "Here are the latest news headlines:" if name == "get_news" else "Here are the current web-search results:"
+    if not links:
+        return heading + "\n" + "\n".join(lines)
+    return heading + "\n" + "\n".join(lines) + "\n\nLinks:\n" + "\n".join(f"{index}. {link}" for index, link in enumerate(links, 1))
 
 
 def _report(source: str) -> None:
@@ -266,6 +304,8 @@ def answer(user_text: str, history: list[dict[str, Any]], private_mode: bool = F
                 reply = response.text or "I could not produce an answer."
                 if successful and _refusal(reply):
                     reply = _template(*successful[-1], user_text)
+                elif successful and successful[-1][0] in {"get_news", "web_search"}:
+                    reply = _template(*successful[-1], user_text)
                 if not used_tool and requested:
                     name, arguments = requested
                     result = _tool_result(name, arguments, user_text, cache)
@@ -284,7 +324,7 @@ def answer(user_text: str, history: list[dict[str, Any]], private_mode: bool = F
                             if follow.notice and not notice_shown:
                                 print(follow.notice)
                                 notice_shown = True
-                            reply = follow.text or _template(name, result, user_text)
+                            reply = _template(name, result, user_text) if name in {"get_news", "web_search"} else follow.text or _template(name, result, user_text)
                         except Exception:
                             reply = _template(name, result, user_text)
                         if _refusal(reply) and not _failed(result):
