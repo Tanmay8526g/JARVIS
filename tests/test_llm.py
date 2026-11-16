@@ -134,6 +134,14 @@ def test_doctor_does_not_call_model(capsys):
     assert "Routing mode:" in capsys.readouterr().out
 
 
+def test_command_typo_requires_confirmation_before_running(monkeypatch, capsys):
+    """A typo suggests a command but does not execute it automatically."""
+    monkeypatch.setattr(main.config, "VOICE_ENABLED", True)
+    assert main._handle_voice_command("voice of") is False
+    assert main.config.VOICE_ENABLED is True
+    assert main._suggest_command("voice of") == "voice off"
+
+
 def test_casual_local_turn_has_no_tools(monkeypatch):
     """Casual conversation does not offer tools to the local model."""
     from jarvis import brain

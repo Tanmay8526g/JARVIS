@@ -7,6 +7,11 @@ def history():
     """Return a minimal test history."""
     return [{"role":"system","content":"test"}]
 
+
+def teardown_pending():
+    """Reset shared clarification state between tests."""
+    brain.clear_pending()
+
 def test_direct_time_answer_does_not_depend_on_model():
     """A successful time tool produces the answer directly."""
     with patch("jarvis.brain._call") as model, patch("jarvis.brain.run_tool", return_value="Wednesday, 11 November 2026, 06:25:00 PM (IST)"):
@@ -130,3 +135,91 @@ def test_private_history_is_excluded_from_gemini_messages(monkeypatch):
     with patch.object(brain.PROVIDER_MANAGER, "availability", return_value={"gemini": True, "ollama": True}), patch.object(brain.PROVIDER_MANAGER, "_provider", return_value=FakeProvider()):
         answer("hello", [{"role": "system", "content": "test"}, {"role": "user", "content": "secret", "private": True}], False)
     assert all(message.get("content") != "secret" for message in captured)
+
+
+def test_short_followup_reuses_pending_weather_tool():
+    """A short city follow-up runs the pending weather tool directly."""
+    teardown_pending()
+    weather = '{"location":"Jaipur, India","conditions":"clear sky","temperature_c":21.8,"feels_like_c":22.0,"humidity_percent":54,"wind_kmh":2.6}'
+    with patch("jarvis.brain.run_tool", side_effect=["I couldn't find that place. Which city did you mean?", weather]) as run, patch("jarvis.brain._call") as model:
+        assert "Which city" in answer("what is the weather in jaiput", history())
+        result = answer("jaipur", history())
+    assert "Jaipur" in result
+    assert run.call_args_list[1].args[0] == "get_weather"
+    model.assert_not_called()
+    teardown_pending()
+
+
+def test_pending_question_expires_after_two_turns():
+    """A pending clarification is cleared after two unrelated turns."""
+    teardown_pending()
+    with patch("jarvis.brain.run_tool", return_value="I couldn't find that place. Which city did you mean?"), patch("jarvis.brain._call", return_value={"message": {"tool_calls": [], "content": "okay"}}):
+        answer("weather in jaiput", history())
+        answer("hello", history())
+        answer("hello", history())
+    assert brain.PENDING_QUESTION is None
+
+
+def test_consent_reply_is_replaced_without_pending_action():
+    """Model-written consent requests are replaced by Python text."""
+    with patch("jarvis.brain._call", return_value={"message": {"tool_calls": [], "content": "May I have your consent to search?"}}):
+        result = answer("tell me something", history())
+    assert "consent" not in result.lower()
+    assert "program" in result.lower()
+
+
+def test_bare_yes_without_pending_gets_clarifying_reply():
+    """A bare confirmation answer has a safe response when nothing is pending."""
+    teardown_pending()
+    with patch("jarvis.brain._call") as model:
+        result = answer("yes", history())
+    assert result == "I'm not sure what you're confirming. What would you like me to do?"
+    model.assert_not_called()
+
+
+def test_debug_answer_source_includes_provider_and_model(capsys):
+    """Debug answer-source output identifies the answering brain."""
+    with patch("jarvis.brain._call", return_value={"message": {"tool_calls": [], "content": "hello"}}):
+        answer("hello", history())
+    output = capsys.readouterr().out
+    assert "answer_source=model only provider=" in output and "model=" in output
+
+
+def test_deli_asks_before_answering_and_yes_uses_delhi():
+    """A close geocoding choice is confirmed before the final answer."""
+    teardown_pending()
+    suggestion = '{"location":"Deli, Haryana, India","conditions":"clear sky","temperature_c":25.6,"feels_like_c":25.6,"humidity_percent":54,"wind_kmh":2.6,"suggested_city":"Delhi","suggested_location":"Delhi, India","needs_confirmation":true}'
+    delhi = '{"location":"Delhi, Delhi, India","conditions":"clear sky","temperature_c":25.6,"feels_like_c":25.6,"humidity_percent":54,"wind_kmh":2.6}'
+    with patch("jarvis.brain.run_tool", side_effect=[suggestion, delhi]):
+        assert answer("weather in deli", history()) == "Did you mean Delhi, India? (y/n)"
+        result = answer("y", history())
+    assert "Delhi, Delhi, India" in result
+    teardown_pending()
+
+
+def test_deli_no_uses_geocoding_result_with_country():
+    """A declined city suggestion keeps the original full place."""
+    teardown_pending()
+    original = '{"location":"Deli, Haryana, India","conditions":"clear sky","temperature_c":25.6,"feels_like_c":25.6,"humidity_percent":54,"wind_kmh":2.6,"suggested_city":"Delhi","suggested_location":"Delhi, India","needs_confirmation":true}'
+    with patch("jarvis.brain.run_tool", return_value=original):
+        assert answer("weather in deli", history()) == "Did you mean Delhi, India? (y/n)"
+        result = answer("n", history())
+    assert "Deli, Haryana, India" in result and "India" in result
+    teardown_pending()
+
+
+def test_private_mode_refuses_every_internet_tool():
+    """Private mode blocks every internet tool before execution."""
+    for name in brain.WEB_TOOLS:
+        call = {"function": {"name": name, "arguments": {"city": "Jaipur", "query": "x", "topic": "x", "url": "https://example.com"}}}
+        with patch("jarvis.brain._call", return_value={"message": {"tool_calls": [call], "content": ""}}), patch("jarvis.brain.run_tool") as run:
+            result = answer("hello", history(), True)
+        assert "Private mode is on" in result
+        run.assert_not_called()
+
+
+def test_time_still_works_in_private_mode():
+    """Time remains a local direct answer in private mode."""
+    with patch("jarvis.brain.run_tool", return_value="Wednesday, 11 November 2026, 06:25:00 PM (IST)"), patch("jarvis.brain._call") as model:
+        assert "06:25:00 PM" in answer("what time is it", history(), True)
+    model.assert_not_called()

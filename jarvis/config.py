@@ -18,6 +18,14 @@ ROUTING_GEMINI_KEYWORDS = ("weather", "air quality", "aqi", "news", "latest", "c
 ROUTING_LOCAL_KEYWORDS = ("hello", "hi", "hey", "thanks", "thank you", "okay", "ok", "good morning", "good night")
 # Short messages without a tool keyword are treated as casual in smart mode.
 ROUTING_LOCAL_MAX_CHARS = 120
+# Common city names used only for local typo recovery after geocoding fails.
+COMMON_CITIES = (
+    "Ahmedabad", "Bengaluru", "Bhopal", "Chandigarh", "Chennai", "Delhi",
+    "Hyderabad", "Jaipur", "Kanpur", "Kochi", "Kolkata", "Lucknow", "Mumbai",
+    "Nagpur", "Patna", "Pune", "Surat", "Thiruvananthapuram", "Varanasi",
+    "Agra", "Amritsar", "New York", "London", "Paris", "Tokyo", "Sydney",
+    "Singapore", "Dubai", "Toronto", "Berlin", "Rome", "Chicago", "Los Angeles",
+)
 MAX_MESSAGES = 10
 MAX_TOOL_ROUNDS = 4
 TIMEOUT = 10
@@ -85,7 +93,7 @@ def load_config() -> None:
     global MODEL, MAX_MESSAGES, MAX_TOOL_ROUNDS, TIMEOUT, MAX_TOOL_CHARS, DEBUG, USER_AGENT, ALLOWED_APPS
     try:
         data = json.loads(CONFIG_FILE.read_text(encoding="utf-8")) if CONFIG_FILE.exists() else {}
-        for name in ("MODEL", "LLM_PROVIDER", "LLM_FALLBACK_PROVIDER", "GEMINI_MODEL", "ROUTING_MODE", "ROUTING_GEMINI_KEYWORDS", "ROUTING_LOCAL_KEYWORDS", "ROUTING_LOCAL_MAX_CHARS", "MAX_MESSAGES", "MAX_TOOL_ROUNDS", "TIMEOUT", "MAX_TOOL_CHARS", "DEBUG", "VOICE_ENABLED", "VOICE_RATE", "VOICE_VOLUME", "VOICE_ID", "VOICE_MAX_CHARS", "USER_AGENT", "ALLOWED_APPS"):
+        for name in ("MODEL", "LLM_PROVIDER", "LLM_FALLBACK_PROVIDER", "GEMINI_MODEL", "ROUTING_MODE", "ROUTING_GEMINI_KEYWORDS", "ROUTING_LOCAL_KEYWORDS", "ROUTING_LOCAL_MAX_CHARS", "COMMON_CITIES", "MAX_MESSAGES", "MAX_TOOL_ROUNDS", "TIMEOUT", "MAX_TOOL_CHARS", "DEBUG", "VOICE_ENABLED", "VOICE_RATE", "VOICE_VOLUME", "VOICE_ID", "VOICE_MAX_CHARS", "USER_AGENT", "ALLOWED_APPS"):
             if name in data:
                 globals()[name] = _valid_allowed_apps(data[name]) if name == "ALLOWED_APPS" else data[name]
     except (OSError, ValueError):
