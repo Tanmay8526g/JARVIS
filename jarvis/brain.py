@@ -20,6 +20,9 @@ SYSTEM_TOOLS = {"open_website", "open_application", "take_screenshot"}
 WEB_TOOLS = {"web_search", "read_webpage", "get_weather", "get_air_quality", "get_news", "wikipedia_summary"}
 DIRECT_ANSWER_TOOLS = {"get_current_datetime", "get_weather", "get_air_quality"}
 DECLINED = "The user declined"
+PENDING_QUESTION: dict[str, Any] | None = None
+PENDING_PLACE_CONFIRMATION: dict[str, Any] | None = None
+PRIVATE_INTERNET_REPLY = "Private mode is on, so I can't use the internet. Type 'private off' to turn it back on."
 
 
 def _field(value: Any, name: str, default: Any = None) -> Any:
@@ -45,7 +48,7 @@ def _normalized(response: Any) -> NormalizedResponse:
 
 def fallback(text: str) -> tuple[str, dict[str, Any]] | None:
     """Choose a live tool when the model skips tool calling."""
-    lower = text.lower()
+    lower = text.lower().strip().rstrip("?.")
     if any(x in lower for x in ("what time", "current time", "what date", "today's date")):
         return "get_current_datetime", {}
     match = re.search(r"(?:weather|air quality|aqi)\s+(?:in|for)\s+([a-z .'-]+)", lower)
@@ -63,7 +66,7 @@ def fallback(text: str) -> tuple[str, dict[str, Any]] | None:
 def _failed(result: str) -> bool:
     """Identify tool errors or empty results."""
     lower = result.lower()
-    return lower.startswith(("web search failed:", "weather lookup failed:", "air-quality lookup failed:", "news lookup failed:", "wikipedia lookup failed:", "webpage read failed:", "tool ")) or "no search results were found" in lower or "no news items were found" in lower or "no location was found" in lower or lower.startswith("nothing was found")
+    return lower.startswith(("web search failed:", "weather lookup failed:", "air-quality lookup failed:", "news lookup failed:", "wikipedia lookup failed:", "webpage read failed:", "tool ")) or "no search results were found" in lower or "no news items were found" in lower or "no location was found" in lower or "i couldn't find that place" in lower or lower.startswith("nothing was found")
 
 
 def _refusal(text: str) -> bool:
@@ -72,9 +75,68 @@ def _refusal(text: str) -> bool:
     return any(x in lower for x in ("i don't have access", "i'm not aware", "i am not aware", "i cannot", "static ai", "don't have real-time", "can't access real-time", "cannot access real-time"))
 
 
+def _consent_request(text: str) -> bool:
+    """Detect model-written consent requests that the program must replace."""
+    lower = text.lower()
+    return "consent" in lower or "permission" in lower or "ask you to confirm" in lower
+
+
+def _clean_user_text(text: str) -> str:
+    """Trim repeated spaces and harmless trailing punctuation."""
+    return re.sub(r"\s+", " ", str(text)).strip().rstrip("?.").strip()
+
+
+def clear_pending() -> None:
+    """Clear the pending clarification state."""
+    global PENDING_QUESTION
+    PENDING_QUESTION = None
+
+
+def clear_place_confirmation() -> None:
+    """Clear a pending place confirmation."""
+    global PENDING_PLACE_CONFIRMATION
+    PENDING_PLACE_CONFIRMATION = None
+
+
+def _set_place_confirmation(name: str, city: str, result: str) -> None:
+    """Remember a place choice and its original geocoding result."""
+    global PENDING_PLACE_CONFIRMATION
+    data = json.loads(result)
+    PENDING_PLACE_CONFIRMATION = {"tool_name": name, "city": city, "result": result, "suggested_city": data.get("suggested_city"), "remaining": 2}
+
+
+def _set_pending(name: str, argument: str) -> None:
+    """Remember one missing tool argument for up to two turns."""
+    global PENDING_QUESTION
+    PENDING_QUESTION = {"tool_name": name, "missing_argument": argument, "remaining": 2}
+
+
+def _pending_followup(text: str) -> tuple[str, dict[str, Any]] | None:
+    """Consume a short pending clarification answer, if one exists."""
+    global PENDING_QUESTION
+    if PENDING_QUESTION is None:
+        return None
+    words = text.split()
+    casual_words = {str(word).lower() for word in config.ROUTING_LOCAL_KEYWORDS}
+    if 0 < len(words) <= 3 and text.lower() not in casual_words | {"yes", "no", "y", "n"}:
+        name = str(PENDING_QUESTION["tool_name"])
+        argument = str(PENDING_QUESTION["missing_argument"])
+        clear_pending()
+        return name, {argument: text}
+    PENDING_QUESTION["remaining"] -= 1
+    if PENDING_QUESTION["remaining"] <= 0:
+        clear_pending()
+    return None
+
+
 def _action_request(text: str) -> bool:
     """Return whether the user clearly asked for a system action."""
     return bool(re.search(r"\b(open|launch|start|go to|visit|play|screenshot|take a picture of the screen)\b", text.lower()))
+
+
+def _internet_request(text: str) -> bool:
+    """Detect a request that needs live internet data."""
+    return fallback(text) is not None and fallback(text)[0] in WEB_TOOLS
 
 
 def _target_allowed(name: str, arguments: dict[str, Any], user_text: str) -> bool:
@@ -182,16 +244,19 @@ def _template(name: str, result: str, question: str = "") -> str:
     if name in {"get_weather", "get_air_quality"}:
         try:
             data = json.loads(result)
-            location = data.get("location", "Unknown location").split(",")[0]
+            location = data.get("location", "Unknown location")
+            if data.get("needs_confirmation"):
+                return f"Did you mean {data.get('suggested_location', data.get('suggested_city'))}? (y/n)"
             if name == "get_weather":
-                return (
+                reply = (
                     f"{location}: {data.get('conditions', 'unknown')}, "
                     f"{data.get('temperature_c', 'unknown')} C "
                     f"(feels like {data.get('feels_like_c', 'unknown')} C), "
                     f"humidity {data.get('humidity_percent', 'unknown')}%, "
                     f"wind {data.get('wind_kmh', 'unknown')} km/h. Source: Open-Meteo."
                 )
-            return (
+                return _assumption_prefix(data, reply)
+            reply = (
                 f"{location}: PM2.5 {data.get('pm2_5_ug_m3', 'unknown')} ug/m3, "
                 f"PM10 {data.get('pm10_ug_m3', 'unknown')} ug/m3, "
                 f"US AQI {data.get('us_aqi', 'unknown')}, European AQI "
@@ -199,6 +264,7 @@ def _template(name: str, result: str, question: str = "") -> str:
                 "AQI scales are Open-Meteo's US and European scales, not India's national AQI. "
                 "Source: Open-Meteo."
             )
+            return _assumption_prefix(data, reply)
         except (TypeError, ValueError, json.JSONDecodeError):
             pass
     if name == "open_website":
@@ -210,6 +276,14 @@ def _template(name: str, result: str, question: str = "") -> str:
         return result
     labels = {"get_news": "Here are the latest news results", "web_search": "Here are the current web-search results", "wikipedia_summary": "Here is the Wikipedia summary", "read_webpage": "Here is the webpage text"}
     return f"{labels.get(name, 'Tool result')}: {result}"
+
+
+def _needs_place_confirmation(result: str) -> bool:
+    """Return whether a weather result asks for a place choice."""
+    try:
+        return bool(json.loads(result).get("needs_confirmation"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
 
 
 def _format_linked_results(name: str, result: str) -> str:
@@ -237,6 +311,8 @@ def _format_linked_results(name: str, result: str) -> str:
             source = urlparse(str(row.get("url", ""))).netloc or source
         if title:
             lines.append(f"{index}. {title} — Source: {source}.")
+        if title:
+            lines[-1] = f"{index}. {title} - Source: {source}."
         link = str(row.get("link", row.get("url", ""))).strip()
         if link:
             links.append(link)
@@ -248,11 +324,19 @@ def _format_linked_results(name: str, result: str) -> str:
     return heading + "\n" + "\n".join(lines) + "\n\nLinks:\n" + "\n".join(f"{index}. {link}" for index, link in enumerate(links, 1))
 
 
-def _report(source: str) -> None:
+def _assumption_prefix(data: dict[str, Any], reply: str) -> str:
+    """Add a clear note when a city typo was corrected."""
+    assumption = data.get("assumed_city")
+    return f"I assumed you meant {assumption}. {reply}" if assumption else reply
+
+
+def _report(source: str, provider: str | None = None) -> None:
     """Log and show the answer source when debugging."""
-    LOGGER.info("answer_source=%s", source)
+    provider_name = provider or PROVIDER_MANAGER.active_name
+    model = "none" if provider_name == "none" else (config.GEMINI_MODEL if provider_name == "gemini" else config.MODEL)
+    LOGGER.info("answer_source=%s provider=%s model=%s", source, provider_name, model)
     if DEBUG:
-        print(f"[DEBUG] answer_source={source}")
+        print(f"[DEBUG] answer_source={source} provider={provider_name} model={model}")
 
 
 def _call(messages: list[dict[str, Any]], tools: list[Any] | None = None) -> NormalizedResponse:
@@ -260,11 +344,74 @@ def _call(messages: list[dict[str, Any]], tools: list[Any] | None = None) -> Nor
     return PROVIDER_MANAGER.chat(messages, TOOLS if tools is None else tools)
 
 
+def _place_confirmation_answer(text: str, history: list[dict[str, Any]], private_mode: bool) -> str | None:
+    """Handle y/n or a corrected city without a model call."""
+    global PENDING_PLACE_CONFIRMATION
+    if PENDING_PLACE_CONFIRMATION is None:
+        return None
+    state = PENDING_PLACE_CONFIRMATION
+    lower = text.casefold()
+    if lower in {"y", "yes"}:
+        clear_place_confirmation()
+        result = _tool_result(state["tool_name"], {"city": state["suggested_city"]}, text, {})
+    elif lower in {"n", "no"}:
+        clear_place_confirmation()
+        result = state["result"]
+    elif lower.startswith("no,"):
+        clear_place_confirmation()
+        result = _tool_result(state["tool_name"], {"city": text.split(",", 1)[1].strip()}, text, {})
+    elif len(text.split()) <= 3:
+        clear_place_confirmation()
+        result = _tool_result(state["tool_name"], {"city": text}, text, {})
+    else:
+        state["remaining"] -= 1
+        if state["remaining"] <= 0:
+            clear_place_confirmation()
+        return None
+    if lower in {"n", "no"}:
+        try:
+            data = json.loads(result)
+            data.pop("needs_confirmation", None)
+            data.pop("suggested_city", None)
+            data.pop("suggested_location", None)
+            result = json.dumps(data)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    reply = _template(state["tool_name"], result, text)
+    _record(history, "assistant", reply, private_mode)
+    _report("direct answer", "none")
+    return reply
+
+
 def answer(user_text: str, history: list[dict[str, Any]], private_mode: bool = False) -> str:
     """Answer one turn while enforcing tool and confirmation safety."""
+    user_text = _clean_user_text(user_text)
     _record(history, "user", user_text, private_mode)
     messages = [history[0]] + history[1:][-MAX_MESSAGES:]
     cache: dict[tuple[str, str], str] = {}
+    place_reply = _place_confirmation_answer(user_text, history, private_mode)
+    if place_reply is not None:
+        return place_reply
+    pending_call = _pending_followup(user_text)
+    if user_text.lower() in {"yes", "no", "y", "n"}:
+        reply = "I'm not sure what you're confirming. What would you like me to do?"
+        _record(history, "assistant", reply, private_mode)
+        _report("direct answer", "none")
+        return reply
+    if pending_call:
+        name, arguments = pending_call
+        result = _tool_result(name, arguments, user_text, cache)
+        if _failed(result):
+            _set_pending(name, "city")
+            reply = "I couldn't find that place. Which city did you mean?"
+        elif name in {"get_weather", "get_air_quality"} and _needs_place_confirmation(result):
+            _set_place_confirmation(name, str(arguments.get("city", "")), result)
+            reply = _template(name, result, user_text)
+        else:
+            reply = _template(name, result, user_text)
+        _record(history, "assistant", reply, private_mode)
+        _report("direct answer", "none")
+        return reply
     requested = fallback(user_text)
     availability = PROVIDER_MANAGER.availability()
     chosen_provider = "ollama" if private_mode else choose_provider(user_text, config.ROUTING_MODE, availability)
@@ -278,16 +425,28 @@ def answer(user_text: str, history: list[dict[str, Any]], private_mode: bool = F
     notice_shown = False
     try:
         if private_mode and requested and requested[0] in WEB_TOOLS:
-            reply = "Private mode is on; live web data is unavailable."
+            reply = PRIVATE_INTERNET_REPLY
             _record(history, "assistant", reply, private_mode)
             _report("direct answer")
+            return reply
+        if private_mode and _internet_request(user_text):
+            reply = PRIVATE_INTERNET_REPLY
+            _record(history, "assistant", reply, private_mode)
+            _report("direct answer", "none")
             return reply
         if requested and requested[0] in DIRECT_ANSWER_TOOLS:
             name, arguments = requested
             result = _tool_result(name, arguments, user_text, cache)
-            reply = _template(name, result, user_text) if not _failed(result) else result
+            if _failed(result) and "which city" in result.lower():
+                _set_pending(name, "city")
+                reply = "I couldn't find that place. Which city did you mean?"
+            elif name in {"get_weather", "get_air_quality"} and _needs_place_confirmation(result):
+                _set_place_confirmation(name, str(arguments.get("city", "")), result)
+                reply = _template(name, result, user_text)
+            else:
+                reply = _template(name, result, user_text) if not _failed(result) else result
             _record(history, "assistant", reply, private_mode)
-            _report("direct answer")
+            _report("direct answer", "none")
             return reply
         for _ in range(MAX_TOOL_ROUNDS):
             response = _normalized(_call(messages, allowed_tools))
@@ -302,6 +461,8 @@ def answer(user_text: str, history: list[dict[str, Any]], private_mode: bool = F
             calls = response.tool_calls
             if not calls:
                 reply = response.text or "I could not produce an answer."
+                if _consent_request(reply):
+                    reply = "I handle confirmations in the program. What would you like me to do?"
                 if successful and _refusal(reply):
                     reply = _template(*successful[-1], user_text)
                 elif successful and successful[-1][0] in {"get_news", "web_search"}:
@@ -324,7 +485,10 @@ def answer(user_text: str, history: list[dict[str, Any]], private_mode: bool = F
                             if follow.notice and not notice_shown:
                                 print(follow.notice)
                                 notice_shown = True
-                            reply = _template(name, result, user_text) if name in {"get_news", "web_search"} else follow.text or _template(name, result, user_text)
+                            if _consent_request(follow.text):
+                                reply = "I handle confirmations in the program. What would you like me to do?"
+                            else:
+                                reply = _template(name, result, user_text) if name in {"get_news", "web_search"} else follow.text or _template(name, result, user_text)
                         except Exception:
                             reply = _template(name, result, user_text)
                         if _refusal(reply) and not _failed(result):
@@ -345,6 +509,17 @@ def answer(user_text: str, history: list[dict[str, Any]], private_mode: bool = F
             for call in calls:
                 name = call.name
                 arguments = _normalize_arguments(call.arguments)
+                if private_mode and name in WEB_TOOLS:
+                    reply = PRIVATE_INTERNET_REPLY
+                    _record(history, "assistant", reply, private_mode)
+                    _report("direct answer", "none")
+                    return reply
+                if name in {"get_weather", "get_air_quality"} and not arguments.get("city"):
+                    _set_pending(name, "city")
+                    reply = "Which city did you mean?"
+                    _record(history, "assistant", reply, private_mode)
+                    _report("direct answer", "none")
+                    return reply
                 if name in SYSTEM_TOOLS:
                     if not _action_request(user_text) or not _target_allowed(name, arguments, user_text):
                         return _cancel_turn(history, "OK, cancelled.", private_mode)
@@ -354,6 +529,22 @@ def answer(user_text: str, history: list[dict[str, Any]], private_mode: bool = F
                 result = _tool_result(name, arguments, user_text, cache)
                 if result.startswith(DECLINED):
                     return _cancel_turn(history, "OK, cancelled.", private_mode)
+                if name in {"get_weather", "get_air_quality"} and _failed(result) and "which city" in result.lower():
+                    _set_pending(name, "city")
+                    reply = "I couldn't find that place. Which city did you mean?"
+                    _record(history, "assistant", reply, private_mode)
+                    _report("direct answer", "none")
+                    return reply
+                if name in {"get_weather", "get_air_quality"} and not _failed(result):
+                    try:
+                        if json.loads(result).get("needs_confirmation"):
+                            _set_place_confirmation(name, str(arguments.get("city", "")), result)
+                            reply = _template(name, result, user_text)
+                            _record(history, "assistant", reply, private_mode)
+                            _report("direct answer", "none")
+                            return reply
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        pass
                 if name == "web_search" and _failed(result):
                     history.append({"role": "assistant", "content": result})
                     _report("fallback")

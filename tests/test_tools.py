@@ -4,6 +4,7 @@ from pathlib import Path
 from jarvis.tools import run_tool
 from jarvis.brain import fallback
 from jarvis.tools import system_tools
+from jarvis.tools import weather_tools
 
 def test_unknown_tool_is_rejected():
     """Unknown names return an error string."""
@@ -65,3 +66,22 @@ def test_declined_actions_do_not_open_or_save():
     browser_open.assert_not_called()
     startfile.assert_not_called()
     grab.assert_not_called()
+
+
+def test_weather_typo_uses_one_clear_city_match():
+    """A close typo returns a confirmation suggestion."""
+    responses = [
+        {},
+        {"results": [{"name": "Jaipur", "country": "India", "latitude": 26.9, "longitude": 75.8}]},
+        {"current": {"temperature_2m": 21.8, "apparent_temperature": 22.0, "relative_humidity_2m": 54, "wind_speed_10m": 2.6, "rain": 0, "weather_code": 0}},
+    ]
+    with patch.object(weather_tools, "_json", side_effect=responses):
+        result = weather_tools.get_weather("jaiput")
+    assert '"needs_confirmation": true' in result
+    assert '"suggested_city": "Jaipur"' in result
+
+
+def test_unknown_weather_city_asks_for_clarification():
+    """An unclear city produces a Python clarification question."""
+    with patch.object(weather_tools, "_json", side_effect=[{}, {}, {}]):
+        assert weather_tools.get_weather("notarealcity") == "I couldn't find that place. Which city did you mean?"

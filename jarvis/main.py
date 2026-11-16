@@ -1,9 +1,10 @@
 """Terminal chat loop."""
 from __future__ import annotations
+from difflib import get_close_matches
 from typing import Any
 import logging
 from pathlib import Path
-from .brain import answer
+from .brain import _clean_user_text, answer
 from .brain import PROVIDER_MANAGER
 from . import config
 from .config import LOG_FILE
@@ -13,16 +14,36 @@ logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s %
 
 def main() -> None:
     """Run Jarvis's terminal chat loop."""
-    history: list[dict[str, Any]] = [{"role":"system","content":"You are Jarvis. Use tools for current facts, never guess, mention source names or URLs for web answers, and ask consent through tools before system actions."}]
+    history: list[dict[str, Any]] = [{"role":"system","content":"You are Jarvis. Use tools for current facts, never guess, and mention source names or URLs for web answers. Confirmation for system actions is handled entirely by the program. Never ask the user for consent, permission, or confirmation in text."}]
     private_mode = False
+    pending_command: str | None = None
     print(f"Jarvis is ready (mode: {config.ROUTING_MODE}). Type 'exit' to quit.")
     for status_line in PROVIDER_MANAGER.status_lines():
         print(status_line)
     print("Commands: doctor, mode, mode smart, mode gemini_first, mode local_only, provider, private on, private off, voice on, voice off, voices, voice 2, faster, slower")
     while True:
         prompt = "[private] You: " if private_mode else "You: "
-        try: user_text = input(prompt).strip()
+        try: user_text = _clean_user_text(input(prompt))
         except (KeyboardInterrupt, EOFError): print("\nJarvis: Goodbye!"); break
+        if pending_command:
+            if user_text.lower() in {"y", "yes"}:
+                confirmed = pending_command
+                pending_command = None
+                if confirmed == "exit":
+                    print("Jarvis: Goodbye!")
+                    break
+                if _handle_provider_command(confirmed) or _handle_doctor_command(confirmed) or _handle_mode_command(confirmed) or _handle_voice_command(confirmed):
+                    continue
+                private_command = _handle_private_command(confirmed, private_mode)
+                if private_command is not None:
+                    private_mode = private_command
+                continue
+            if user_text.lower() in {"n", "no"}:
+                pending_command = None
+                print("OK, cancelled.")
+                continue
+            print("Please answer y/n.")
+            continue
         if user_text.lower() == "exit": print("Jarvis: Goodbye!"); break
         if not user_text: continue
         if _handle_provider_command(user_text): continue
@@ -32,6 +53,11 @@ def main() -> None:
         private_command = _handle_private_command(user_text, private_mode)
         if private_command is not None:
             private_mode = private_command
+            continue
+        suggestion = _suggest_command(user_text)
+        if suggestion:
+            pending_command = suggestion
+            print(f"Did you mean '{suggestion}'? (y/n)")
             continue
         try:
             reply = answer(user_text, history, private_mode)
@@ -52,7 +78,7 @@ def _speak_reply(reply: str) -> None:
 
 def _handle_provider_command(user_text: str) -> bool:
     """Handle provider commands without calling a language model."""
-    command = user_text.strip().lower()
+    command = _clean_user_text(user_text).lower()
     if command == "provider":
         print(PROVIDER_MANAGER.status())
         return True
@@ -61,7 +87,7 @@ def _handle_provider_command(user_text: str) -> bool:
         if PROVIDER_MANAGER.set_provider(name):
             print(f"Provider switched to {name}.")
         else:
-            print("Use: provider, provider ollama, or provider gemini")
+            return False
         return True
     return False
 
@@ -77,7 +103,7 @@ def _env_is_gitignored() -> bool:
 
 def _handle_doctor_command(user_text: str) -> bool:
     """Show safe provider and project diagnostics without calling a model."""
-    if user_text.strip().lower() != "doctor":
+    if _clean_user_text(user_text).lower() != "doctor":
         return False
     for status_line in PROVIDER_MANAGER.status_lines():
         print(status_line)
@@ -90,7 +116,7 @@ def _handle_doctor_command(user_text: str) -> bool:
 
 def _handle_voice_command(user_text: str) -> bool:
     """Handle voice commands without calling a language model."""
-    command = user_text.strip().lower()
+    command = _clean_user_text(user_text).lower()
     if command == "voice on":
         config.VOICE_ENABLED = True
         print("Voice on.")
@@ -114,7 +140,7 @@ def _handle_voice_command(user_text: str) -> bool:
             config.VOICE_ID = voice[0]
             print(f"Voice {number} selected.")
         except (ValueError, IndexError):
-            print("Use: voices or voice <number>")
+            return False
         return True
     if command == "faster":
         config.VOICE_RATE += 25
@@ -129,7 +155,7 @@ def _handle_voice_command(user_text: str) -> bool:
 
 def _handle_mode_command(user_text: str) -> bool:
     """Handle routing-mode commands without calling a language model."""
-    command = user_text.strip().lower()
+    command = _clean_user_text(user_text).lower()
     if command == "mode":
         print(f"Mode: {config.ROUTING_MODE}; {PROVIDER_MANAGER.status()}")
         return True
@@ -139,14 +165,14 @@ def _handle_mode_command(user_text: str) -> bool:
             config.ROUTING_MODE = mode
             print(f"Routing mode switched to {mode}.")
         else:
-            print("Use: mode, mode smart, mode gemini_first, or mode local_only")
+            return False
         return True
     return False
 
 
 def _handle_private_command(user_text: str, current: bool) -> bool | None:
     """Handle private-mode commands without calling a language model."""
-    command = user_text.strip().lower()
+    command = _clean_user_text(user_text).lower()
     if command == "private on":
         print("Private mode on.")
         return True
@@ -154,3 +180,14 @@ def _handle_private_command(user_text: str, current: bool) -> bool | None:
         print("Private mode off.")
         return False
     return None
+
+
+def _suggest_command(user_text: str) -> str | None:
+    """Return one close Jarvis command for confirmation, if any."""
+    choices = (
+        "voice on", "voice off", "voices", "faster", "slower", "doctor", "exit",
+        "provider", "provider ollama", "provider gemini", "mode", "mode smart",
+        "mode gemini_first", "mode local_only", "private on", "private off",
+    )
+    matches = get_close_matches(_clean_user_text(user_text).lower(), choices, n=1, cutoff=0.78)
+    return matches[0] if matches else None
